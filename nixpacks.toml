@@ -1,0 +1,12 @@
+[phases.setup]
+nixPkgs = ["python312", "nodejs_22"]
+
+[phases.install]
+cmds = [
+  "pip install --no-cache-dir -r requirements.txt",
+  "python -m playwright install --with-deps chromium",
+  "npm install --omit=dev"
+]
+
+[start]
+cmd = "node server.js"
