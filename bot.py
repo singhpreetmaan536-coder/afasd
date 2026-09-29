@@ -5,8 +5,7 @@ import json
 import threading
 import asyncio
 import requests
-from playwright.sync_api import sync_playwright
-from html import unescape
+from html import unescape, escape
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -142,152 +141,6 @@ def format_profile(data: dict) -> str:
 
 
 
-# ============== INSTAGRAM SCREENSHOT ==============
-
-def capture_instagram_screenshot(username: str):
-    """
-    Capture only the Instagram profile header:
-    PFP + username + followers/following/posts + bio.
-    It also closes/removes the login/signup popup before taking the screenshot.
-    """
-    username = username.strip().lower().replace("@", "")
-    safe_username = re.sub(r"[^a-zA-Z0-9_.-]", "_", username)
-    path = os.path.abspath(f"instagram_{safe_username}.png")
-
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-
-            page = browser.new_page(
-                viewport={"width": 1280, "height": 800},
-                device_scale_factor=1
-            )
-
-            page.goto(
-                f"https://www.instagram.com/{username}/",
-                wait_until="domcontentloaded",
-                timeout=20000
-            )
-
-            page.wait_for_timeout(3000)
-
-            # ---------------------------------------------------------
-            # CLOSE INSTAGRAM LOGIN / SIGN-UP POPUP
-            # ---------------------------------------------------------
-
-            # First try Escape.
-            try:
-                page.keyboard.press("Escape")
-                page.wait_for_timeout(800)
-            except Exception:
-                pass
-
-            # Try the popup's close button.
-            close_selectors = [
-                'div[role="dialog"] button[aria-label="Close"]',
-                'div[role="dialog"] button[aria-label*="Close" i]',
-                'div[role="dialog"] [aria-label="Close"]',
-                'button[aria-label="Close"]',
-            ]
-
-            popup_closed = False
-
-            for selector in close_selectors:
-                try:
-                    close_button = page.locator(selector).first
-
-                    if close_button.count() and close_button.is_visible():
-                        close_button.click(force=True)
-                        page.wait_for_timeout(800)
-                        popup_closed = True
-                        break
-                except Exception:
-                    pass
-
-            # Some Instagram versions don't expose an aria-label on the X.
-            # If a dialog still exists, click its top-right corner.
-            if not popup_closed:
-                try:
-                    dialog = page.locator('div[role="dialog"]').first
-
-                    if dialog.count() and dialog.is_visible():
-                        box = dialog.bounding_box()
-
-                        if box:
-                            page.mouse.click(
-                                box["x"] + box["width"] - 34,
-                                box["y"] + 34
-                            )
-                            page.wait_for_timeout(800)
-                            popup_closed = True
-                except Exception:
-                    pass
-
-            # Last resort: remove visible modal dialogs from the screenshot.
-            # This does NOT affect the Instagram API/check logic.
-            try:
-                page.locator('[role="dialog"]').evaluate_all(
-                    """elements => elements.forEach(element => {
-                        element.style.display = 'none';
-                    })"""
-                )
-            except Exception:
-                pass
-
-            # ---------------------------------------------------------
-            # FIND PROFILE HEADER
-            # ---------------------------------------------------------
-
-            profile_header = None
-
-            # Instagram layout can change, so try several selectors.
-            selectors = [
-                f'header:has-text("{username}")',
-                "main header",
-                "header",
-            ]
-
-            for selector in selectors:
-                try:
-                    candidate = page.locator(selector).first
-
-                    if candidate.count() and candidate.is_visible():
-                        profile_header = candidate
-                        break
-                except Exception:
-                    pass
-
-            # ---------------------------------------------------------
-            # SCREENSHOT ONLY THE PROFILE HEADER
-            # ---------------------------------------------------------
-
-            if profile_header:
-                profile_header.screenshot(path=path)
-
-            else:
-                # Fallback crop. This is intentionally small and does NOT
-                # capture the complete Instagram page/posts grid.
-                page.screenshot(
-                    path=path,
-                    clip={
-                        "x": 0,
-                        "y": 0,
-                        "width": 900,
-                        "height": 250
-                    }
-                )
-
-            browser.close()
-
-        return path
-
-    except Exception as e:
-        print(f"Failed to capture Instagram screenshot for @{username}: {e}")
-        return None
-
-
-
-
 # ============== TELEGRAM BOT ==============
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -352,29 +205,35 @@ def clean_usernames(args):
                 cleaned.append(username)
     return cleaned
 
-async def send_monitor_update(bot, chat_id: int, username: str, status: str):
-    screenshot_path = await asyncio.to_thread(capture_instagram_screenshot, username)
+async def send_monitor_update(bot, chat_id: int, username: str, status: str, data: dict | None = None):
+    """Send status and Instagram profile values as text (no screenshot)."""
+    if status == "ACTIVE" and data and data.get("user"):
+        u = data["user"]
 
-    if screenshot_path and os.path.exists(screenshot_path):
-        try:
-            with open(screenshot_path, "rb") as photo:
-                await bot.send_photo(
-                    chat_id=chat_id,
-                    photo=photo,
-                    caption=f"@{username}"
-                )
-        except Exception as e:
-            print(f"Failed to send screenshot for @{username}: {e}")
-        finally:
-            try:
-                os.remove(screenshot_path)
-            except OSError:
-                pass
+        full_name = escape(str(u.get("full_name") or username))
+        ig_username = escape(str(u.get("username") or username))
+        biography = escape(str(u.get("biography") or "No bio"))
+        followers = escape(str(u.get("followers", "—")))
+        following = escape(str(u.get("following", "—")))
+        posts = escape(str(u.get("posts", "—")))
 
-    if status == "ACTIVE":
-        await bot.send_message(chat_id, f"✅ <b>ACTIVE</b> — @{username}", parse_mode=ParseMode.HTML)
-    else:
-        await bot.send_message(chat_id, f"🚫 <b>ACCOUNT BANNED</b> — @{username}", parse_mode=ParseMode.HTML)
+        message = (
+            "✅ <b>ACTIVE</b>\n\n"
+            f"👤 <b>{full_name}</b>\n"
+            f"🔗 @{ig_username}\n"
+            f"📝 {biography}\n\n"
+            f"👥 Followers: <b>{followers}</b>\n"
+            f"➡️ Following: <b>{following}</b>\n"
+            f"📸 Posts: <b>{posts}</b>"
+        )
+        await bot.send_message(chat_id, message, parse_mode=ParseMode.HTML)
+        return
+
+    await bot.send_message(
+        chat_id,
+        f"🚫 <b>ACCOUNT BANNED</b> — @{escape(username)}",
+        parse_mode=ParseMode.HTML
+    )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
@@ -484,7 +343,7 @@ async def monitor_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.HTML
     )
 
-    # First check: screenshot first, then status.
+    # First check: send profile values and status as text.
     for username in cleaned:
         data = await asyncio.to_thread(check_instagram, username)
         status = data.get("status", "BANNED")
@@ -495,7 +354,7 @@ async def monitor_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             current["statuses"][username] = status
 
-        await send_monitor_update(context.bot, chat_id, username, status)
+        await send_monitor_update(context.bot, chat_id, username, status, data)
 
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -583,7 +442,7 @@ async def telegram_monitor_loop(app):
 
                         if old_status is not None and new_status != old_status:
                             await send_monitor_update(
-                                app.bot, chat_id, username, new_status
+                                app.bot, chat_id, username, new_status, data
                             )
 
                         with lock:
