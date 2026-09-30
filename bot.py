@@ -569,7 +569,7 @@ async def monitor_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     monitor_text = (
         "\n\n━━━━━━━━━━━━━━━━━━\n\n".join(blocks) +
         "\n\n━━━━━━━━━━━━━━━━━━\n"
-        "📡 Monitoring"
+        "📡 Monitoring \n"
         "🔔 You will receive an update only when an account status changes."
     )
 
