@@ -4,6 +4,8 @@ import time
 import json
 import threading
 import asyncio
+from datetime import datetime
+from zoneinfo import ZoneInfo
 import requests
 from playwright.sync_api import sync_playwright
 from html import unescape
@@ -412,10 +414,27 @@ async def send_monitor_update(bot, chat_id: int, username: str, status: str):
             except OSError:
                 pass
 
+    # Timestamp of the status-change notification (India time).
+    notified_at = datetime.now(ZoneInfo("Asia/Kolkata"))
+    date_str = notified_at.strftime("%d-%m-%Y")
+    time_str = notified_at.strftime("%I:%M:%S %p")
+
     if status == "ACTIVE":
-        await bot.send_message(chat_id, f"✅ <b>ACTIVE</b> — @{username}", parse_mode=ParseMode.HTML)
+        await bot.send_message(
+            chat_id,
+            f"🟢 <b>ACCOUNT UNBANNED / ACTIVE</b> — @{username}\n\n"
+            f"📅 <b>Date:</b> {date_str}\n"
+            f"🕐 <b>Time:</b> {time_str} (IST)",
+            parse_mode=ParseMode.HTML
+        )
     else:
-        await bot.send_message(chat_id, f"🚫 <b>ACCOUNT BANNED</b> — @{username}", parse_mode=ParseMode.HTML)
+        await bot.send_message(
+            chat_id,
+            f"🚫 <b>ACCOUNT BANNED</b> — @{username}\n\n"
+            f"📅 <b>Date:</b> {date_str}\n"
+            f"🕐 <b>Time:</b> {time_str} (IST)",
+            parse_mode=ParseMode.HTML
+        )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_command_gif(
