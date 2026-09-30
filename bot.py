@@ -24,260 +24,105 @@ def decode_html_entities(text: str) -> str:
 
 
 def check_instagram(username: str) -> dict:
-    """
-    Reliable Instagram status check.
-
-    ACTIVE  = confirmed profile data was returned.
-    BANNED  = Instagram explicitly indicates the profile is unavailable.
-    UNKNOWN = request was blocked/limited/incomplete; never treat this as
-              ACTIVE or BANNED.
-    """
+    """Exact logic from server.js /api/check"""
     if not username:
-        return {"exists": False, "status": "UNKNOWN", "reason": "empty_username"}
+        return {"exists": False, "status": "BANNED"}
 
     username = username.strip().lower().replace("@", "")
 
-    headers = {
-        "x-ig-app-id": "936619743392459",
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/130.0.0.0 Safari/537.36"
-        ),
-        "Accept": "application/json, text/plain, */*",
-        "Referer": f"https://www.instagram.com/{username}/",
-    }
-
-    # ---------------- METHOD 1: Instagram profile API ----------------
+    # Method 1
     try:
+        headers = {
+            "x-ig-app-id": "936619743392459",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "*/*",
+            "Referer": "https://www.instagram.com/"
+        }
+
         response = requests.get(
-            "https://www.instagram.com/api/v1/users/web_profile_info/",
-            params={"username": username},
+            f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username}",
             headers=headers,
-            timeout=12,
+            timeout=12
         )
 
         if response.status_code == 200:
-            try:
-                payload = response.json()
-            except ValueError:
-                payload = {}
-
-            user = payload.get("data", {}).get("user")
-
-            # Only a real user object can prove ACTIVE.
-            if isinstance(user, dict) and (
-                user.get("username") or user.get("pk") or user.get("id")
-            ):
-                returned_username = str(user.get("username") or "").lower()
-                if returned_username and returned_username != username:
-                    return {
-                        "exists": False,
-                        "status": "UNKNOWN",
-                        "reason": "username_mismatch",
-                    }
-
+            data = response.json()
+            user = data.get("data", {}).get("user")
+            if user:
                 return {
                     "exists": True,
                     "status": "ACTIVE",
                     "user": {
                         "full_name": user.get("full_name") or username,
-                        "username": user.get("username") or username,
+                        "username": user.get("username"),
                         "biography": user.get("biography") or "",
                         "followers": user.get("edge_followed_by", {}).get("count", 0),
                         "following": user.get("edge_follow", {}).get("count", 0),
                         "posts": user.get("edge_owner_to_timeline_media", {}).get("count", 0),
-                        "profile_pic": (
-                            user.get("profile_pic_url_hd")
-                            or user.get("profile_pic_url")
-                            or ""
-                        ),
-                    },
-                    "source": "profile_api",
+                        "profile_pic": user.get("profile_pic_url_hd") or user.get("profile_pic_url") or ""
+                    }
                 }
+    except Exception:
+        pass
 
-            # A clean API response with no user is meaningful only when
-            # Instagram explicitly identifies the profile as missing.
-            raw_api = response.text.lower()
-            explicit_missing = any(
-                marker in raw_api
-                for marker in (
-                    '"user":null',
-                    '"user": null',
-                    '"user_not_found"',
-                    '"profile_not_found"',
-                    '"user not found"',
-                )
-            )
-            if explicit_missing:
-                return {
-                    "exists": False,
-                    "status": "BANNED",
-                    "reason": "profile_not_found",
-                }
-
-            return {
-                "exists": False,
-                "status": "UNKNOWN",
-                "reason": "incomplete_api_response",
-            }
-
-        # 404 can be a genuine unavailable profile, but Instagram also
-        # uses non-200 responses for rate limits/challenges. Do not guess.
-        if response.status_code == 404:
-            return {
-                "exists": False,
-                "status": "BANNED",
-                "reason": "http_404",
-            }
-
-        return {
-            "exists": False,
-            "status": "UNKNOWN",
-            "reason": f"http_{response.status_code}",
-        }
-
-    except (requests.RequestException, ValueError) as e:
-        print(f"Instagram API check failed for @{username}: {e}")
-
-    # ---------------- METHOD 2: Public profile HTML ----------------
+    # Method 2 - Public page
     try:
         page_res = requests.get(
             f"https://www.instagram.com/{username}/",
             headers={
-                "User-Agent": headers["User-Agent"],
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Referer": "https://www.instagram.com/",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
             },
-            timeout=12,
+            timeout=12
         )
 
-        html = page_res.text or ""
-        html_lower = html.lower()
+        html = page_res.text
 
-        # Explicit unavailable-profile evidence.
-        unavailable_markers = (
-            "page isn't available",
-            "page isn’t available",
-            "sorry, this page isn't available",
-            "sorry, this page isn’t available",
-            "the link you followed may be broken",
-            "profile isn't available",
-            "profile isn’t available",
-        )
+        if "og:title" in html or f'"username":"{username}"' in html:
+            full_name = username
+            biography = ""
+            profile_pic = ""
+            followers = following = posts = "—"
 
-        if page_res.status_code == 404 or any(
-            marker in html_lower for marker in unavailable_markers
-        ):
-            return {
-                "exists": False,
-                "status": "BANNED",
-                "reason": "profile_unavailable",
-            }
+            title_match = re.search(r'property="og:title" content="([^"]+)"', html, re.I)
+            if title_match:
+                full_name = decode_html_entities(title_match.group(1).split("(")[0].strip())
 
-        if page_res.status_code != 200:
-            return {
-                "exists": False,
-                "status": "UNKNOWN",
-                "reason": f"html_http_{page_res.status_code}",
-            }
+            desc_match = re.search(r'property="og:description" content="([^"]+)"', html, re.I)
+            if desc_match:
+                raw = decode_html_entities(desc_match.group(1))
+                raw = raw.split(" - See Instagram")[0].strip()
+                biography = raw
 
-        # IMPORTANT:
-        # Generic Instagram HTML, og:title alone, login pages, challenge
-        # pages, etc. are NOT enough to call an account ACTIVE.
-        title_match = re.search(
-            r'property=["\']og:title["\']\s+content=["\']([^"\']+)["\']',
-            html,
-            re.I,
-        )
-        desc_match = re.search(
-            r'property=["\']og:description["\']\s+content=["\']([^"\']+)["\']',
-            html,
-            re.I,
-        )
-        pic_match = re.search(
-            r'property=["\']og:image["\']\s+content=["\']([^"\']+)["\']',
-            html,
-            re.I,
-        )
+                nums = re.search(
+                    r"([\d,.]+[KMB]?)\s+Followers.*?([\d,.]+[KMB]?)\s+Following.*?([\d,.]+[KMB]?)\s+Posts",
+                    raw, re.I
+                )
+                if nums:
+                    followers = nums.group(1)
+                    following = nums.group(2)
+                    posts = nums.group(3)
 
-        full_name = ""
-        biography = ""
-        profile_pic = ""
-        followers = following = posts = "—"
+            pic_match = re.search(r'property="og:image" content="([^"]+)"', html, re.I)
+            if pic_match:
+                profile_pic = pic_match.group(1)
 
-        if title_match:
-            full_name = decode_html_entities(
-                title_match.group(1).split("(")[0].strip()
-            )
-
-        if desc_match:
-            raw = decode_html_entities(desc_match.group(1))
-            raw = raw.split(" - See Instagram")[0].strip()
-            biography = raw
-
-            nums = re.search(
-                r"([\d,.]+[KMB]?)\s+Followers.*?"
-                r"([\d,.]+[KMB]?)\s+Following.*?"
-                r"([\d,.]+[KMB]?)\s+Posts",
-                raw,
-                re.I,
-            )
-            if nums:
-                followers = nums.group(1)
-                following = nums.group(2)
-                posts = nums.group(3)
-
-        if pic_match:
-            profile_pic = decode_html_entities(pic_match.group(1))
-
-        # Require multiple pieces of profile evidence.
-        # og:title by itself is deliberately insufficient.
-        title_has_username = bool(
-            full_name and username.lower() in full_name.lower()
-        )
-        has_stats = followers != "—" and following != "—" and posts != "—"
-        has_profile_marker = bool(
-            re.search(
-                rf'"username"\s*:\s*"{re.escape(username)}"',
-                html,
-                re.I,
-            )
-        )
-
-        if title_has_username and (has_stats or has_profile_marker):
             return {
                 "exists": True,
                 "status": "ACTIVE",
                 "user": {
-                    "full_name": full_name or username,
+                    "full_name": full_name,
                     "username": username,
                     "biography": biography,
                     "followers": followers,
                     "following": following,
                     "posts": posts,
-                    "profile_pic": profile_pic,
-                },
-                "source": "public_html",
+                    "profile_pic": profile_pic
+                }
             }
+    except Exception:
+        pass
 
-        return {
-            "exists": False,
-            "status": "UNKNOWN",
-            "reason": "generic_or_incomplete_instagram_html",
-        }
-
-    except requests.RequestException as e:
-        print(f"Instagram HTML check failed for @{username}: {e}")
-    except Exception as e:
-        print(f"Instagram HTML parse failed for @{username}: {e}")
-
-    # Never convert network blocks/timeouts/incomplete responses into BANNED.
-    return {
-        "exists": False,
-        "status": "UNKNOWN",
-        "reason": "instagram_check_inconclusive",
-    }
+    return {"exists": False, "status": "BANNED"}
 
 
 def format_profile(data: dict) -> str:
@@ -462,6 +307,42 @@ if not ADMIN_ID:
 
 SUBSCRIBERS_FILE = os.getenv("SUBSCRIBERS_FILE", "subscribers.json")
 
+# ============== COMMAND GIFS ==============
+# Put your own GIF URLs/file_ids in Railway variables, or keep the local
+# files in the gifs/ folder. Each command has its own GIF.
+GIF_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gifs")
+COMMAND_GIFS = {
+    "start": os.getenv("GIF_START", os.path.join(GIF_DIR, "start.gif")),
+    "monitor": os.getenv("GIF_MONITOR", os.path.join(GIF_DIR, "monitor.gif")),
+    "stop": os.getenv("GIF_STOP", os.path.join(GIF_DIR, "stop.gif")),
+    "status": os.getenv("GIF_STATUS", os.path.join(GIF_DIR, "status.gif")),
+    "adduser": os.getenv("GIF_ADDUSER", os.path.join(GIF_DIR, "adduser.gif")),
+    "removeuser": os.getenv("GIF_REMOVEUSER", os.path.join(GIF_DIR, "removeuser.gif")),
+    "listusers": os.getenv("GIF_LISTUSERS", os.path.join(GIF_DIR, "listusers.gif")),
+    "denied": os.getenv("GIF_DENIED", os.path.join(GIF_DIR, "denied.gif")),
+}
+
+async def send_command_gif(bot, chat_id: int, command: str, caption: str, **kwargs):
+    """Send command-specific GIF first, with the command text underneath."""
+    gif = COMMAND_GIFS.get(command)
+    if gif and isinstance(gif, str) and (gif.startswith(("http://", "https://")) or os.path.exists(gif)):
+        try:
+            await bot.send_animation(
+                chat_id=chat_id,
+                animation=gif,
+                caption=caption,
+                parse_mode=ParseMode.HTML,
+                **kwargs
+            )
+            return True
+        except Exception as e:
+            print(f"Failed to send {command} GIF: {e}")
+    await bot.send_message(chat_id=chat_id, text=caption, parse_mode=ParseMode.HTML, **kwargs)
+    return False
+
+async def reply_command_gif(update: Update, command: str, caption: str):
+    return await send_command_gif(update.effective_message.get_bot(), update.effective_chat.id, command, caption)
+
 # chat_id -> {"usernames": [...], "statuses": {...}, "active": bool, "user_id": int}
 monitors = {}
 lock = threading.Lock()
@@ -491,12 +372,17 @@ def is_allowed(user_id: int) -> bool:
     return is_admin(user_id) or user_id in subscribers
 
 async def not_allowed_message(update: Update):
-    await update.effective_message.reply_text(
+    await send_command_gif(
+        context_bot(update),
+        update.effective_chat.id,
+        "denied",
         "❌ <b>Access Denied</b>\n\n"
         "You don't have an active subscription.\n"
-        "Contact the admin to get access.",
-        parse_mode=ParseMode.HTML
+        "Contact the admin to get access."
     )
+
+def context_bot(update: Update):
+    return update.get_bot()
 
 def clean_usernames(args):
     cleaned = []
@@ -507,26 +393,8 @@ def clean_usernames(args):
                 cleaned.append(username)
     return cleaned
 
-async def send_monitor_update(
-    bot,
-    chat_id: int,
-    username: str,
-    status: str,
-    data: dict | None = None,
-):
-    """Send screenshot + a status message for a CONFIRMED state."""
-    if status == "UNKNOWN":
-        await bot.send_message(
-            chat_id,
-            f"⚠️ <b>CHECKING</b> — @{username}\n"
-            "Instagram did not return enough reliable data. Retrying...",
-            parse_mode=ParseMode.HTML,
-        )
-        return
-
-    screenshot_path = await asyncio.to_thread(
-        capture_instagram_screenshot, username
-    )
+async def send_monitor_update(bot, chat_id: int, username: str, status: str):
+    screenshot_path = await asyncio.to_thread(capture_instagram_screenshot, username)
 
     if screenshot_path and os.path.exists(screenshot_path):
         try:
@@ -534,7 +402,7 @@ async def send_monitor_update(
                 await bot.send_photo(
                     chat_id=chat_id,
                     photo=photo,
-                    caption=f"@{username}",
+                    caption=f"@{username}"
                 )
         except Exception as e:
             print(f"Failed to send screenshot for @{username}: {e}")
@@ -545,38 +413,13 @@ async def send_monitor_update(
                 pass
 
     if status == "ACTIVE":
-        u = (data or {}).get("user") or {}
-        bio = u.get("biography") or "No bio"
-
-        message = (
-            "🟢 <b>ACTIVE</b>\n\n"
-            f"👤 <b>{u.get('full_name') or username}</b>\n"
-            f"🔗 @{u.get('username') or username}\n\n"
-            "📋 <b>Profile Details</b>\n"
-            f"• Followers: <b>{u.get('followers', '—')}</b>\n"
-            f"• Following: <b>{u.get('following', '—')}</b>\n"
-            f"• Posts: <b>{u.get('posts', '—')}</b>\n"
-            f"• Bio: {bio}\n\n"
-            "📡 <b>Activity Status</b>\n"
-            "✅ ACTIVE"
-        )
-        await bot.send_message(chat_id, message, parse_mode=ParseMode.HTML)
-
-    elif status == "BANNED":
-        await bot.send_message(
-            chat_id,
-            f"🔴 <b>ACCOUNT BANNED</b>\n\n"
-            f"👤 Account\n@{username}\n\n"
-            "📋 <b>Profile Details</b>\n"
-            "• Profile unavailable\n\n"
-            "📡 <b>Activity Status</b>\n"
-            "🚫 BANNED",
-            parse_mode=ParseMode.HTML,
-        )
-
+        await bot.send_message(chat_id, f"✅ <b>ACTIVE</b> — @{username}", parse_mode=ParseMode.HTML)
+    else:
+        await bot.send_message(chat_id, f"🚫 <b>ACCOUNT BANNED</b> — @{username}", parse_mode=ParseMode.HTML)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.effective_message.reply_text(
+    await send_command_gif(
+        context.bot, update.effective_chat.id, "start",
         "👋 <b>Welcome to Instagram Monitor</b>\n\n"
         "Monitor one or multiple Instagram usernames.\n\n"
         "📋 <b>Commands</b>\n"
@@ -585,8 +428,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/status — Current monitor status\n"
         "/help — Show help\n\n"
         "Example:\n"
-        "<code>/monitor instagram cristiano</code>",
-        parse_mode=ParseMode.HTML
+        "<code>/monitor instagram cristiano</code>"
     )
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -595,37 +437,37 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not is_admin(uid):
-        await update.effective_message.reply_text("❌ Admin only command.")
+        await send_command_gif(context.bot, update.effective_chat.id, "denied", "❌ <b>Admin only command.</b>")
         return
     if not context.args:
-        await update.effective_message.reply_text("Usage: /adduser <telegram_user_id>")
+        await send_command_gif(context.bot, update.effective_chat.id, "adduser", "Usage: <code>/adduser &lt;telegram_user_id&gt;</code>")
         return
     try:
         user_id = int(context.args[0])
     except ValueError:
-        await update.effective_message.reply_text("❌ Invalid Telegram user ID.")
+        await send_command_gif(context.bot, update.effective_chat.id, "adduser", "❌ <b>Invalid Telegram user ID.</b>")
         return
 
     if user_id in subscribers:
-        await update.effective_message.reply_text(f"⚠️ User <code>{user_id}</code> is already subscribed.", parse_mode=ParseMode.HTML)
+        await send_command_gif(context.bot, update.effective_chat.id, "adduser", f"⚠️ User <code>{user_id}</code> is already subscribed.")
         return
 
     subscribers.add(user_id)
     save_subscribers(subscribers)
-    await update.effective_message.reply_text(f"✅ User <code>{user_id}</code> added successfully.", parse_mode=ParseMode.HTML)
+    await send_command_gif(context.bot, update.effective_chat.id, "adduser", f"✅ User <code>{user_id}</code> added successfully.")
 
 async def removeuser(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not is_admin(uid):
-        await update.effective_message.reply_text("❌ Admin only command.")
+        await send_command_gif(context.bot, update.effective_chat.id, "denied", "❌ <b>Admin only command.</b>")
         return
     if not context.args:
-        await update.effective_message.reply_text("Usage: /removeuser <telegram_user_id>")
+        await send_command_gif(context.bot, update.effective_chat.id, "removeuser", "Usage: <code>/removeuser &lt;telegram_user_id&gt;</code>")
         return
     try:
         user_id = int(context.args[0])
     except ValueError:
-        await update.effective_message.reply_text("❌ Invalid Telegram user ID.")
+        await send_command_gif(context.bot, update.effective_chat.id, "removeuser", "❌ <b>Invalid Telegram user ID.</b>")
         return
 
     subscribers.discard(user_id)
@@ -636,22 +478,22 @@ async def removeuser(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if info.get("user_id") == user_id:
                 del monitors[chat_id]
 
-    await update.effective_message.reply_text(f"🔴 User <code>{user_id}</code> removed.", parse_mode=ParseMode.HTML)
+    await send_command_gif(context.bot, update.effective_chat.id, "removeuser", f"🔴 User <code>{user_id}</code> removed.")
 
 async def listusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not is_admin(uid):
-        await update.effective_message.reply_text("❌ Admin only command.")
+        await send_command_gif(context.bot, update.effective_chat.id, "denied", "❌ <b>Admin only command.</b>")
         return
 
     if not subscribers:
-        await update.effective_message.reply_text("📭 No subscribers yet.")
+        await send_command_gif(context.bot, update.effective_chat.id, "listusers", "📭 <b>No subscribers yet.</b>")
         return
 
     lines = [f"• <code>{uid}</code>" for uid in sorted(subscribers)]
-    await update.effective_message.reply_text(
-        f"👥 <b>Subscribers ({len(subscribers)}):</b>\n\n" + "\n".join(lines),
-        parse_mode=ParseMode.HTML
+    await send_command_gif(
+        context.bot, update.effective_chat.id, "listusers",
+        f"👥 <b>Subscribers ({len(subscribers)}):</b>\n\n" + "\n".join(lines)
     )
 
 async def monitor_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -662,57 +504,83 @@ async def monitor_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     cleaned = clean_usernames(context.args)
     if not cleaned:
-        await update.effective_message.reply_text(
-            "Usage: /monitor <username1> <username2> ...\n"
-            "Example: /monitor instagram cristiano"
+        await send_command_gif(
+            context.bot, update.effective_chat.id, "monitor",
+            "Usage: <code>/monitor &lt;username1&gt; &lt;username2&gt; ...</code>\nExample: <code>/monitor instagram cristiano</code>"
         )
         return
 
     chat_id = update.effective_chat.id
-
     with lock:
         monitors[chat_id] = {
             "usernames": cleaned,
             "statuses": {username: None for username in cleaned},
-            "pending": {username: None for username in cleaned},
-            "pending_counts": {username: 0 for username in cleaned},
             "active": True,
-            "user_id": uid,
+            "user_id": uid
         }
 
-    await update.effective_message.reply_text(
-        "📡 <b>Monitor Started</b>\n\n"
-        + "\n".join(f"👤 @{username}" for username in cleaned)
-        + "\n\n"
-        "⏳ Checking account status...\n"
-        "🔒 Status changes require repeated confirmed checks.",
-        parse_mode=ParseMode.HTML,
-    )
-
-    # Initial check. UNKNOWN is not converted into BANNED/ACTIVE.
+    # First check: fetch profile details before sending the monitor-start card.
+    # This makes the first monitor response show the account + profile details + activity status.
+    first_checks = []
     for username in cleaned:
         data = await asyncio.to_thread(check_instagram, username)
-        status = data.get("status", "UNKNOWN")
+        status = data.get("status", "BANNED")
+        first_checks.append((username, data, status))
 
         with lock:
             current = monitors.get(chat_id)
             if not current or not current.get("active"):
                 return
+            current["statuses"][username] = status
 
-            if status in ("ACTIVE", "BANNED"):
-                current["statuses"][username] = status
-                current["pending"][username] = None
-                current["pending_counts"][username] = 0
+    # Build the text shown below the command-specific monitor GIF.
+    blocks = []
+    for username, data, status in first_checks:
+        user = data.get("user") or {}
 
-        if status in ("ACTIVE", "BANNED"):
-            await send_monitor_update(
-                context.bot, chat_id, username, status, data
+        if data.get("exists") and user:
+            activity = "✅ <b>ACTIVE</b>" if status == "ACTIVE" else "🚫 <b>BANNED</b>"
+            profile_block = (
+                f"🟢 <b>Monitor Started</b>\n\n"
+                f"👤 <b>Account</b>\n"
+                f"@{user.get('username') or username}\n\n"
+                f"📋 <b>Profile Details</b>\n"
+                f"• Name: <b>{user.get('full_name') or '—'}</b>\n"
+                f"• Followers: <b>{user.get('followers', '—')}</b>\n"
+                f"• Following: <b>{user.get('following', '—')}</b>\n"
+                f"• Posts: <b>{user.get('posts', '—')}</b>\n"
+                f"• Bio: {user.get('biography') or 'No bio'}\n\n"
+                f"📡 <b>Activity Status</b>\n"
+                f"{activity}"
             )
         else:
-            await send_monitor_update(
-                context.bot, chat_id, username, "UNKNOWN", data
+            profile_block = (
+                f"🟢 <b>Monitor Started</b>\n\n"
+                f"👤 <b>Account</b>\n"
+                f"@{username}\n\n"
+                f"📋 <b>Profile Details</b>\n"
+                f"• Profile unavailable\n\n"
+                f"📡 <b>Activity Status</b>\n"
+                f"🚫 <b>BANNED</b>"
             )
 
+        blocks.append(profile_block)
+
+    monitor_text = (
+        "\n\n━━━━━━━━━━━━━━━━━━\n\n".join(blocks) +
+        "\n\n━━━━━━━━━━━━━━━━━━\n"
+        "📡 Monitoring \n"
+        "🔔 You will receive an update only when an account status changes. \n "
+        "⛔ Sometimes it will send false notification due to server error from instagram \n"
+        "⛔ Try re monitoring your target if you get an false update"
+    )
+
+    await send_command_gif(
+        context.bot, chat_id, "monitor", monitor_text
+    )
+
+    # First check is already shown in the monitor card above.
+    # Future updates are sent only when the account status changes.
 
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -730,13 +598,13 @@ async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             usernames = []
 
     if usernames:
-        await update.effective_message.reply_text(
-            "🔴 <b>Monitoring stopped</b>\n" +
-            "\n".join(f"• @{username}" for username in usernames),
-            parse_mode=ParseMode.HTML
+        await send_command_gif(
+            context.bot, chat_id, "stop",
+            "🔴 <b>Monitoring stopped</b>\n\n" +
+            "\n".join(f"• @{username}" for username in usernames)
         )
     else:
-        await update.effective_message.reply_text("ℹ️ No active monitor.")
+        await send_command_gif(context.bot, chat_id, "stop", "ℹ️ <b>No active monitor.</b>")
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -754,8 +622,9 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             usernames, statuses = [], {}
 
     if not usernames:
-        await update.effective_message.reply_text(
-            "ℹ️ No active monitor.\nUse /monitor <username>"
+        await send_command_gif(
+            context.bot, chat_id, "status",
+            "ℹ️ <b>No active monitor.</b>\nUse <code>/monitor &lt;username&gt;</code>"
         )
         return
 
@@ -763,24 +632,16 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• @{username} — <b>{statuses.get(username) or 'CHECKING'}</b>"
         for username in usernames
     ]
-    await update.effective_message.reply_text(
-        "📡 <b>Current monitor status</b>\n\n" + "\n".join(lines),
-        parse_mode=ParseMode.HTML
+    await send_command_gif(
+        context.bot, chat_id, "status",
+        "📡 <b>Current monitor status</b>\n\n" + "\n".join(lines)
     )
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     print(f"Telegram error: {context.error}")
 
 async def telegram_monitor_loop(app):
-    """
-    Checks every 2 seconds.
-
-    UNKNOWN never changes the confirmed state.
-    A real ACTIVE <-> BANNED change must be confirmed by
-    2 consecutive reliable checks before notifying.
-    """
-    CONFIRMATIONS_REQUIRED = 2
-
+    """Checks every 2 seconds and notifies only on status changes."""
     while True:
         try:
             with lock:
@@ -788,7 +649,7 @@ async def telegram_monitor_loop(app):
                     (
                         chat_id,
                         info.get("usernames", [])[:],
-                        info.get("statuses", {}).copy(),
+                        info.get("statuses", {}).copy()
                     )
                     for chat_id, info in monitors.items()
                     if info.get("active")
@@ -802,79 +663,26 @@ async def telegram_monitor_loop(app):
                             break
 
                     try:
-                        data = await asyncio.to_thread(
-                            check_instagram, username
-                        )
-                        new_status = data.get("status", "UNKNOWN")
+                        data = await asyncio.to_thread(check_instagram, username)
+                        new_status = data.get("status", "BANNED")
+                        old_status = old_statuses.get(username)
 
-                        if new_status == "UNKNOWN":
-                            # Do NOT overwrite the last confirmed status.
-                            print(
-                                f"⚠️ UNKNOWN check for @{username}: "
-                                f"{data.get('reason', 'unknown')}"
+                        if old_status is not None and new_status != old_status:
+                            await send_monitor_update(
+                                app.bot, chat_id, username, new_status
                             )
-                            continue
 
                         with lock:
-                            current = monitors.get(chat_id)
-                            if not current or not current.get("active"):
-                                continue
-
-                            old_status = current["statuses"].get(username)
-                            pending = current["pending"].get(username)
-                            pending_count = current["pending_counts"].get(
-                                username, 0
-                            )
-
-                            # First confirmed result establishes the baseline.
-                            if old_status is None:
-                                current["statuses"][username] = new_status
-                                current["pending"][username] = None
-                                current["pending_counts"][username] = 0
-                                should_notify = False
-                            elif new_status == old_status:
-                                current["pending"][username] = None
-                                current["pending_counts"][username] = 0
-                                should_notify = False
-                            else:
-                                # Possible change: require repeated confirmation.
-                                if pending == new_status:
-                                    pending_count += 1
-                                else:
-                                    pending = new_status
-                                    pending_count = 1
-
-                                current["pending"][username] = pending
-                                current["pending_counts"][username] = pending_count
-
-                                should_notify = (
-                                    pending_count >= CONFIRMATIONS_REQUIRED
-                                )
-
-                                if should_notify:
-                                    current["statuses"][username] = new_status
-                                    current["pending"][username] = None
-                                    current["pending_counts"][username] = 0
-
-                        if should_notify:
-                            await send_monitor_update(
-                                app.bot,
-                                chat_id,
-                                username,
-                                new_status,
-                                data,
-                            )
+                            if chat_id in monitors:
+                                monitors[chat_id]["statuses"][username] = new_status
 
                     except Exception as e:
-                        print(
-                            f"Monitor check error for @{username}: {e}"
-                        )
+                        print(f"Monitor check error for @{username}: {e}")
 
         except Exception as e:
             print(f"Monitor loop error: {e}")
 
         await asyncio.sleep(2)
-
 
 async def post_init(app):
     app.create_task(telegram_monitor_loop(app))
