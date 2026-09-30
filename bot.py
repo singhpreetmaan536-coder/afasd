@@ -519,19 +519,13 @@ async def monitor_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "user_id": uid
         }
 
-    await send_command_gif(
-        context.bot, chat_id, "monitor",
-        "🟢 <b>Monitor started</b>\n\n" +
-        "👤 <b>Accounts:</b>\n" +
-        "\n".join(f"• @{username}" for username in cleaned) +
-        "\n\n📡 <b>Monitoring:</b> every 2 seconds\n"
-        "🔔 You will receive an update only when an account status changes."
-    )
-
-    # First check: screenshot first, then status.
+    # First check: fetch profile details before sending the monitor-start card.
+    # This makes the first monitor response show the account + profile details + activity status.
+    first_checks = []
     for username in cleaned:
         data = await asyncio.to_thread(check_instagram, username)
         status = data.get("status", "BANNED")
+        first_checks.append((username, data, status))
 
         with lock:
             current = monitors.get(chat_id)
@@ -539,7 +533,52 @@ async def monitor_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             current["statuses"][username] = status
 
-        await send_monitor_update(context.bot, chat_id, username, status)
+    # Build the text shown below the command-specific monitor GIF.
+    blocks = []
+    for username, data, status in first_checks:
+        user = data.get("user") or {}
+
+        if data.get("exists") and user:
+            activity = "✅ <b>ACTIVE</b>" if status == "ACTIVE" else "🚫 <b>BANNED</b>"
+            profile_block = (
+                f"🟢 <b>Monitor Started</b>\n\n"
+                f"👤 <b>Account</b>\n"
+                f"@{user.get('username') or username}\n\n"
+                f"📋 <b>Profile Details</b>\n"
+                f"• Name: <b>{user.get('full_name') or '—'}</b>\n"
+                f"• Followers: <b>{user.get('followers', '—')}</b>\n"
+                f"• Following: <b>{user.get('following', '—')}</b>\n"
+                f"• Posts: <b>{user.get('posts', '—')}</b>\n"
+                f"• Bio: {user.get('biography') or 'No bio'}\n\n"
+                f"📡 <b>Activity Status</b>\n"
+                f"{activity}"
+            )
+        else:
+            profile_block = (
+                f"🟢 <b>Monitor Started</b>\n\n"
+                f"👤 <b>Account</b>\n"
+                f"@{username}\n\n"
+                f"📋 <b>Profile Details</b>\n"
+                f"• Profile unavailable\n\n"
+                f"📡 <b>Activity Status</b>\n"
+                f"🚫 <b>BANNED</b>"
+            )
+
+        blocks.append(profile_block)
+
+    monitor_text = (
+        "\n\n━━━━━━━━━━━━━━━━━━\n\n".join(blocks) +
+        "\n\n━━━━━━━━━━━━━━━━━━\n"
+        "📡 Monitoring"
+        "🔔 You will receive an update only when an account status changes."
+    )
+
+    await send_command_gif(
+        context.bot, chat_id, "monitor", monitor_text
+    )
+
+    # First check is already shown in the monitor card above.
+    # Future updates are sent only when the account status changes.
 
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
