@@ -570,7 +570,9 @@ async def monitor_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "\n\n━━━━━━━━━━━━━━━━━━\n\n".join(blocks) +
         "\n\n━━━━━━━━━━━━━━━━━━\n"
         "📡 Monitoring \n"
-        "🔔 You will receive an update only when an account status changes."
+        "🔔 You will receive an update only when an account status changes. \n "
+        "⛔ Sometimes it will send false notification due to server error from instagram \n"
+        "⛔ Try re monitoring your target if you get an false update"
     )
 
     await send_command_gif(
