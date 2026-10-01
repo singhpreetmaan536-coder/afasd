@@ -327,22 +327,35 @@ COMMAND_GIFS = {
 }
 
 async def send_command_gif(bot, chat_id: int, command: str, caption: str, **kwargs):
-    """Send command-specific GIF first, with the command text underneath."""
+    """Send command GIF, but never let a GIF timeout block the command."""
     gif = COMMAND_GIFS.get(command)
-    if gif and isinstance(gif, str) and (gif.startswith(("http://", "https://")) or os.path.exists(gif)):
+
+    if gif and isinstance(gif, str) and (
+        gif.startswith(("http://", "https://")) or os.path.exists(gif)
+    ):
         try:
-            await bot.send_animation(
-                chat_id=chat_id,
-                animation=gif,
-                caption=caption,
-                parse_mode=ParseMode.HTML,
-                **kwargs
+            await asyncio.wait_for(
+                bot.send_animation(
+                    chat_id=chat_id,
+                    animation=gif,
+                    caption=caption,
+                    parse_mode=ParseMode.HTML,
+                    **kwargs
+                ),
+                timeout=12
             )
             return True
         except Exception as e:
-            print(f"Failed to send {command} GIF: {e}")
-    await bot.send_message(chat_id=chat_id, text=caption, parse_mode=ParseMode.HTML, **kwargs)
+            print(f"Failed/timeout sending {command} GIF: {e}")
+
+    await bot.send_message(
+        chat_id=chat_id,
+        text=caption,
+        parse_mode=ParseMode.HTML,
+        **kwargs
+    )
     return False
+
 
 async def reply_command_gif(update: Update, command: str, caption: str):
     return await send_command_gif(update.effective_message.get_bot(), update.effective_chat.id, command, caption)
@@ -434,16 +447,13 @@ async def send_monitor_update(
     duration.append(f"{seconds}s")
     duration_str = " ".join(duration)
 
-    date_str = now.strftime("%d-%m-%Y")
-    time_str = now.strftime("%I:%M:%S %p")
-
     if status == "ACTIVE":
         event = "unban"
         caption = (
             f"🟢 <b>ACCOUNT UNBANNED / ACTIVE</b> — @{username}\n\n"
             f"📅 <b>Date:</b> {date_str}\n"
             f"🕐 <b>Time:</b> {time_str} (IST)\n"
-            f"⏱️ <b>Time taken from monitor:</b> {duration_str}"
+            f"⏱️ <b>Time taken :</b> {duration_str}"
         )
     else:
         event = "ban"
@@ -451,7 +461,7 @@ async def send_monitor_update(
             f"🚫 <b>ACCOUNT BANNED</b> — @{username}\n\n"
             f"📅 <b>Date:</b> {date_str}\n"
             f"🕐 <b>Time:</b> {time_str} (IST)\n"
-            f"⏱️ <b>Time taken from monitor:</b> {duration_str}"
+            f"⏱️ <b>Time taken :</b> {duration_str}"
         )
 
     gif = COMMAND_GIFS.get(event)
@@ -459,15 +469,18 @@ async def send_monitor_update(
         gif.startswith(("http://", "https://")) or os.path.exists(gif)
     ):
         try:
-            await bot.send_animation(
-                chat_id=chat_id,
-                animation=gif,
-                caption=caption,
-                parse_mode=ParseMode.HTML,
+            await asyncio.wait_for(
+                bot.send_animation(
+                    chat_id=chat_id,
+                    animation=gif,
+                    caption=caption,
+                    parse_mode=ParseMode.HTML
+                ),
+                timeout=12
             )
             return
         except Exception as e:
-            print(f"Failed to send {event} GIF for @{username}: {e}")
+            print(f"Failed/timeout sending {event} GIF for @{username}: {e}")
 
     await bot.send_message(chat_id, caption, parse_mode=ParseMode.HTML)
 
