@@ -322,6 +322,8 @@ COMMAND_GIFS = {
     "removeuser": os.getenv("GIF_REMOVEUSER", os.path.join(GIF_DIR, "removeuser.gif")),
     "listusers": os.getenv("GIF_LISTUSERS", os.path.join(GIF_DIR, "listusers.gif")),
     "denied": os.getenv("GIF_DENIED", os.path.join(GIF_DIR, "denied.gif")),
+    "ban": os.getenv("GIF_BAN", os.path.join(GIF_DIR, "ban.gif")),
+    "unban": os.getenv("GIF_UNBAN", os.path.join(GIF_DIR, "unban.gif")),
 }
 
 async def send_command_gif(bot, chat_id: int, command: str, caption: str, **kwargs):
@@ -395,16 +397,17 @@ def clean_usernames(args):
                 cleaned.append(username)
     return cleaned
 
-async def send_monitor_update(bot, chat_id: int, username: str, status: str):
+async def send_monitor_update(
+    bot, chat_id: int, username: str, status: str, monitor_started_at: datetime
+):
+    """Send status-change notification with elapsed time and event GIF."""
     screenshot_path = await asyncio.to_thread(capture_instagram_screenshot, username)
 
     if screenshot_path and os.path.exists(screenshot_path):
         try:
             with open(screenshot_path, "rb") as photo:
                 await bot.send_photo(
-                    chat_id=chat_id,
-                    photo=photo,
-                    caption=f"@{username}"
+                    chat_id=chat_id, photo=photo, caption=f"@{username}"
                 )
         except Exception as e:
             print(f"Failed to send screenshot for @{username}: {e}")
@@ -414,27 +417,60 @@ async def send_monitor_update(bot, chat_id: int, username: str, status: str):
             except OSError:
                 pass
 
-    # Timestamp of the status-change notification (India time).
-    notified_at = datetime.now(ZoneInfo("Asia/Kolkata"))
-    date_str = notified_at.strftime("%d-%m-%Y")
-    time_str = notified_at.strftime("%I:%M:%S %p")
+    now = datetime.now(ZoneInfo("Asia/Kolkata"))
+    elapsed = max(0, int((now - monitor_started_at).total_seconds()))
+
+    days, rem = divmod(elapsed, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, seconds = divmod(rem, 60)
+
+    duration = []
+    if days:
+        duration.append(f"{days}d")
+    if hours:
+        duration.append(f"{hours}h")
+    if minutes:
+        duration.append(f"{minutes}m")
+    duration.append(f"{seconds}s")
+    duration_str = " ".join(duration)
+
+    date_str = now.strftime("%d-%m-%Y")
+    time_str = now.strftime("%I:%M:%S %p")
 
     if status == "ACTIVE":
-        await bot.send_message(
-            chat_id,
+        event = "unban"
+        caption = (
             f"🟢 <b>ACCOUNT UNBANNED / ACTIVE</b> — @{username}\n\n"
             f"📅 <b>Date:</b> {date_str}\n"
-            f"🕐 <b>Time:</b> {time_str} (IST)",
-            parse_mode=ParseMode.HTML
+            f"🕐 <b>Time:</b> {time_str} (IST)\n"
+            f"⏱️ <b>Time taken from monitor:</b> {duration_str}"
         )
     else:
-        await bot.send_message(
-            chat_id,
+        event = "ban"
+        caption = (
             f"🚫 <b>ACCOUNT BANNED</b> — @{username}\n\n"
             f"📅 <b>Date:</b> {date_str}\n"
-            f"🕐 <b>Time:</b> {time_str} (IST)",
-            parse_mode=ParseMode.HTML
+            f"🕐 <b>Time:</b> {time_str} (IST)\n"
+            f"⏱️ <b>Time taken from monitor:</b> {duration_str}"
         )
+
+    gif = COMMAND_GIFS.get(event)
+    if gif and isinstance(gif, str) and (
+        gif.startswith(("http://", "https://")) or os.path.exists(gif)
+    ):
+        try:
+            await bot.send_animation(
+                chat_id=chat_id,
+                animation=gif,
+                caption=caption,
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        except Exception as e:
+            print(f"Failed to send {event} GIF for @{username}: {e}")
+
+    await bot.send_message(chat_id, caption, parse_mode=ParseMode.HTML)
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_command_gif(
@@ -531,9 +567,11 @@ async def monitor_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id = update.effective_chat.id
     with lock:
+        monitor_started_at = datetime.now(ZoneInfo("Asia/Kolkata"))
         monitors[chat_id] = {
             "usernames": cleaned,
             "statuses": {username: None for username in cleaned},
+            "started_at": {username: monitor_started_at for username in cleaned},
             "active": True,
             "user_id": uid
         }
@@ -687,8 +725,19 @@ async def telegram_monitor_loop(app):
                         old_status = old_statuses.get(username)
 
                         if old_status is not None and new_status != old_status:
+                            with lock:
+                                current_monitor = monitors.get(chat_id)
+                                started_at = (
+                                    current_monitor.get("started_at", {}).get(username)
+                                    if current_monitor
+                                    else None
+                                )
+
+                            if started_at is None:
+                                started_at = datetime.now(ZoneInfo("Asia/Kolkata"))
+
                             await send_monitor_update(
-                                app.bot, chat_id, username, new_status
+                                app.bot, chat_id, username, new_status, started_at
                             )
 
                         with lock:
